@@ -65,6 +65,12 @@ async function callGemini({ systemInstruction, userText, jsonOutput, maxOutputTo
     system_instruction: { parts: [{ text: systemInstruction }] },
     contents: [{ role: 'user', parts: [{ text: userText }] }],
     generationConfig: {
+      // This model always spends some tokens "thinking" before writing the
+      // visible answer, and those thinking tokens count against the same
+      // maxOutputTokens budget — thinkingLevel "low" keeps that spend small,
+      // and maxOutputTokens is set generously below so the visible answer
+      // itself never gets truncated once thinking has taken its share.
+      thinkingConfig: { thinkingLevel: 'low' },
       maxOutputTokens,
       ...(jsonOutput ? { responseMimeType: 'application/json' } : {}),
     },
@@ -85,7 +91,14 @@ async function callGemini({ systemInstruction, userText, jsonOutput, maxOutputTo
   }
 
   const json = await res.json()
-  return json.candidates?.[0]?.content?.parts?.[0]?.text || ''
+  const candidate = json.candidates?.[0]
+  const text = candidate?.content?.parts?.map((p) => p.text || '').join('') || ''
+  if (candidate?.finishReason === 'MAX_TOKENS' && !text.trim()) {
+    // Thinking alone consumed the whole budget — surface this distinctly so
+    // callers can fall back instead of parsing/returning an empty string.
+    throw new Error('Gemini response truncated before any output (finishReason: MAX_TOKENS)')
+  }
+  return text
 }
 
 async function interpret(question) {
@@ -103,7 +116,7 @@ Rules:
 - A named technician must exactly match one of ${JSON.stringify(KNOWN_TECHNICIANS)} (case-insensitive match, but output using the exact listed casing). If a different name is given, use "unsupported".
 - Output strict JSON only: {"intent": "...", "params": {...}}`
 
-  const text = await callGemini({ systemInstruction, userText: question, jsonOutput: true, maxOutputTokens: 300 })
+  const text = await callGemini({ systemInstruction, userText: question, jsonOutput: true, maxOutputTokens: 800 })
 
   let parsed
   try {
@@ -123,6 +136,6 @@ async function format(question, intent, data) {
 
   const userText = `Question: ${question}\nIntent: ${intent}\nRetrieved data (JSON): ${JSON.stringify(data ?? {})}`
 
-  const text = await callGemini({ systemInstruction, userText, jsonOutput: false, maxOutputTokens: 400 })
+  const text = await callGemini({ systemInstruction, userText, jsonOutput: false, maxOutputTokens: 1200 })
   return text.trim()
 }
