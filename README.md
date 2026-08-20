@@ -2,6 +2,9 @@
 
 A simplified internal operations system for an aircond installation/servicing company, built for the Programmer Assessment (Operations System + AI Challenge).
 
+**Live demo:** https://sejuk-sejuk-ops-assessment.vercel.app
+**Repo:** https://github.com/guitges/sejuk-sejuk-ops-assessment
+
 Digitises: **Admin creates order → Technician completes job → Manager reviews → Dashboard/AI reporting.**
 
 ## What I built
