@@ -71,8 +71,8 @@ export default function OrdersList() {
       ) : orders.length === 0 ? (
         <p className="text-sm text-slate-500">No orders found.</p>
       ) : (
-        <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
-          <table className="w-full text-sm">
+        <div className="bg-white border border-slate-200 rounded-lg overflow-x-auto">
+          <table className="w-full text-sm min-w-[720px]">
             <thead className="bg-slate-50 text-slate-500 text-xs uppercase">
               <tr>
                 <th className="text-left px-4 py-2">Order No</th>
@@ -86,18 +86,18 @@ export default function OrdersList() {
             <tbody>
               {orders.map((o) => (
                 <tr key={o.id} className="border-t border-slate-100 hover:bg-slate-50">
-                  <td className="px-4 py-2">
+                  <td className="px-4 py-2 whitespace-nowrap">
                     <Link to={`/admin/orders/${o.id}`} className="text-brand-700 font-medium hover:underline">
                       {o.order_no}
                     </Link>
                   </td>
-                  <td className="px-4 py-2">{o.customer_name}</td>
-                  <td className="px-4 py-2">{o.service_type}</td>
-                  <td className="px-4 py-2">{o.technicians?.name || <span className="text-slate-400">Unassigned</span>}</td>
-                  <td className="px-4 py-2">
+                  <td className="px-4 py-2 whitespace-nowrap">{o.customer_name}</td>
+                  <td className="px-4 py-2 whitespace-nowrap">{o.service_type}</td>
+                  <td className="px-4 py-2 whitespace-nowrap">{o.technicians?.name || <span className="text-slate-400">Unassigned</span>}</td>
+                  <td className="px-4 py-2 whitespace-nowrap">
                     <StatusBadge status={o.status} />
                   </td>
-                  <td className="px-4 py-2 text-slate-500">{new Date(o.created_at).toLocaleString()}</td>
+                  <td className="px-4 py-2 text-slate-500 whitespace-nowrap">{new Date(o.created_at).toLocaleString()}</td>
                 </tr>
               ))}
             </tbody>
