@@ -250,6 +250,8 @@ begin
       (o_id, 'Job Done', 'Reviewed', 'Manager', now() - interval '3 days');
     insert into service_completions (order_id, technician_name, work_done, extra_charges, final_amount, remarks, created_at)
     values (o_id, 'John', 'Installed 1.5HP split unit', 50, 650, 'Extra bracket needed', now() - interval '4 days');
+    insert into notifications_log (order_id, channel, recipient_type, recipient, message, created_at)
+    values (o_id, 'whatsapp', 'manager', 'Manager', 'Job ORDER1004 marked Job Done by John. Final amount: RM650.00. Please review when ready.', now() - interval '4 days');
 
     insert into orders (order_no, customer_name, phone, address, problem_description, service_type, quoted_price, assigned_technician_id, status, created_at, updated_at)
     values ('ORDER1005','Farah','+60111111115','3 Jalan Aman, Klang','Noise from unit','Repair',200,john,'Job Done', now() - interval '1 days', now() - interval '1 days')
@@ -260,6 +262,8 @@ begin
       (o_id, 'Assigned', 'Job Done', 'John', now() - interval '1 days');
     insert into service_completions (order_id, technician_name, work_done, extra_charges, final_amount, remarks, created_at)
     values (o_id, 'John', 'Tightened fan blade, lubricated motor', 0, 200, null, now() - interval '1 days');
+    insert into notifications_log (order_id, channel, recipient_type, recipient, message, created_at)
+    values (o_id, 'whatsapp', 'manager', 'Manager', 'Job ORDER1005 marked Job Done by John. Final amount: RM200.00. Please review when ready.', now() - interval '1 days');
 
     -- Bala: heavy week (11 jobs) to demonstrate "overloaded technician" AI insight
     for i in 1..11 loop
