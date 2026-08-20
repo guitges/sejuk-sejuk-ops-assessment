@@ -14,7 +14,16 @@ export default function AIQuery() {
     setLoading(true)
     try {
       const res = await askOperationsAI(text)
-      setMessages((m) => [...m, { role: 'ai', text: res.answer, usedLLM: res.usedLLM, intent: res.intent }])
+      setMessages((m) => [
+        ...m,
+        {
+          role: 'ai',
+          text: res.answer,
+          intent: res.intent,
+          usedRemoteInterpret: res.usedRemoteInterpret,
+          usedRemoteFormat: res.usedRemoteFormat,
+        },
+      ])
     } catch (e) {
       setMessages((m) => [...m, { role: 'ai', text: `Something went wrong: ${e.message}` }])
     } finally {
@@ -52,7 +61,8 @@ export default function AIQuery() {
             {m.text}
             {m.role === 'ai' && (
               <div className="mt-1 text-[10px] opacity-60">
-                {m.usedLLM ? 'formatted by LLM' : 'template response'} · intent: {m.intent}
+                interpret: {m.usedRemoteInterpret ? 'Gemini' : 'local fallback'} · format:{' '}
+                {m.usedRemoteFormat ? 'Gemini' : 'local fallback'} · intent: {m.intent}
               </div>
             )}
           </div>

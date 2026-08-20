@@ -4,22 +4,19 @@
 //   user question -> system interprets question -> controlled DB query
 //   -> AI formats the response
 //
-// The "AI" never receives raw database access. It only ever sees the
-// small, structured JSON result of a *controlled* query function from
-// src/lib/db.js (already scoped to specific columns/filters). This file
-// has two swappable layers:
-//   1. interpretQuestion() — turns free text into a known intent + params.
-//      Implemented with lightweight keyword/regex matching so behaviour
-//      is predictable and demo-safe without an API key.
-//   2. formatAnswer() — turns structured data into a natural-language
-//      reply. If VITE_AI_API_KEY is set, this calls a real LLM with
-//      ONLY the already-retrieved structured data (never a raw DB
-//      connection). Otherwise it falls back to a deterministic template
-//      that matches the PDF's example output.
+// Both the "interpret" and "format" steps call a real Claude model, via the
+// serverless function at /api/ai (src/../api/ai.js). That function holds
+// the Anthropic API key server-side — it is never sent to, or bundled into,
+// the browser. Claude itself never gets database access: "interpret" only
+// ever sees the question text plus a fixed list of valid intents/technician
+// names, and "format" only ever sees the small JSON result of a controlled
+// query function from src/lib/db.js (never a table name, never SQL).
 //
-// Swapping in a real LLM for step 1 (NLU) is a one-line change: replace
-// interpretQuestion's body with an LLM call constrained to return one of
-// the SUPPORTED_INTENTS as JSON (see comment below).
+// If the API call fails for any reason (offline, running `npm run dev`
+// without Vercel's serverless runtime, ANTHROPIC_API_KEY not configured on
+// the deployment), both steps fall back to a deterministic local engine —
+// keyword matching for interpretation, a template for formatting — so the
+// module still works, just without real model reasoning.
 
 import {
   jobsCompletedToday,
@@ -49,6 +46,7 @@ export const SUPPORTED_INTENTS = [
 ]
 
 const KNOWN_TECHNICIANS = ['Ali', 'John', 'Bala', 'Yusoff']
+const KNOWN_INTENTS = new Set(['technician_jobs', 'top_technician', 'jobs_completed_count', 'overloaded_technician', 'unsupported'])
 
 function daysAgoIso(days) {
   const d = new Date()
@@ -57,13 +55,20 @@ function daysAgoIso(days) {
   return d.toISOString()
 }
 
-function resolvePeriod(text) {
-  const t = text.toLowerCase()
-  if (t.includes('today')) return { sinceIso: daysAgoIso(0), label: 'today' }
-  if (t.includes('yesterday')) return { sinceIso: daysAgoIso(1), label: 'yesterday' }
-  if (t.includes('last week')) return { sinceIso: daysAgoIso(14), label: 'last week', untilDaysAgo: 7 }
-  // default: this week / no period mentioned
+/** Turns a period label ("today" / "yesterday" / "this week" / "last week") into a query range. */
+function periodFromLabel(label) {
+  if (label === 'today') return { sinceIso: daysAgoIso(0), label: 'today' }
+  if (label === 'yesterday') return { sinceIso: daysAgoIso(1), label: 'yesterday' }
+  if (label === 'last week') return { sinceIso: daysAgoIso(14), label: 'last week' }
   return { sinceIso: daysAgoIso(7), label: 'this week' }
+}
+
+function resolvePeriodFromText(text) {
+  const t = text.toLowerCase()
+  if (t.includes('today')) return periodFromLabel('today')
+  if (t.includes('yesterday')) return periodFromLabel('yesterday')
+  if (t.includes('last week')) return periodFromLabel('last week')
+  return periodFromLabel('this week')
 }
 
 function findTechnicianInText(text) {
@@ -71,34 +76,41 @@ function findTechnicianInText(text) {
   return KNOWN_TECHNICIANS.find((name) => t.includes(name.toLowerCase())) || null
 }
 
-/** Step 1: interpret the free-text question into a known intent + params. */
-export function interpretQuestion(question) {
-  const q = question.trim()
-  const lower = q.toLowerCase()
-  const period = resolvePeriod(lower)
+/** Local fallback interpreter — deterministic keyword matching, used only if the AI endpoint is unavailable. */
+function interpretQuestionLocally(question) {
+  const lower = question.toLowerCase()
+  const period = resolvePeriodFromText(lower)
   const technician = findTechnicianInText(lower)
 
   if (lower.includes('overload') || (lower.includes('most jobs') && lower.includes('busy'))) {
     return { intent: 'overloaded_technician', params: { period } }
   }
-
   if (lower.includes('most jobs') || (lower.includes('which technician') && lower.includes('complet'))) {
     return { intent: 'top_technician', params: { period } }
   }
-
   if (lower.includes('how many') && lower.includes('job')) {
     return { intent: 'jobs_completed_count', params: { period } }
   }
-
-  if (technician && (lower.includes('job') || lower.includes('complet') || lower.includes('did'))) {
-    return { intent: 'technician_jobs', params: { period, technician } }
-  }
-
   if (technician) {
     return { intent: 'technician_jobs', params: { period, technician } }
   }
+  return { intent: 'unsupported', params: { period } }
+}
 
-  return { intent: 'unsupported', params: { period, rawQuestion: q } }
+/** Real step 1: ask Claude (via the serverless function) to classify the question. */
+async function interpretQuestionRemote(question) {
+  const res = await fetch('/api/ai', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'interpret', question }),
+  })
+  if (!res.ok) throw new Error(`interpret failed: ${res.status}`)
+  const json = await res.json()
+  if (!KNOWN_INTENTS.has(json.intent)) throw new Error('interpret returned unknown intent')
+
+  const period = periodFromLabel(json.params?.period)
+  const technician = KNOWN_TECHNICIANS.includes(json.params?.technician) ? json.params.technician : undefined
+  return { intent: json.intent, params: { period, technician } }
 }
 
 /** Step 2: run the matched intent through controlled db.js query functions only. */
@@ -127,7 +139,7 @@ async function runControlledQuery(intent, params) {
   }
 }
 
-/** Step 3: format the structured result into a natural-language answer. */
+/** Local fallback formatter — deterministic template, used only if the AI endpoint is unavailable. */
 function formatTemplate(intent, params, data) {
   switch (intent) {
     case 'technician_jobs': {
@@ -167,62 +179,50 @@ function formatTemplate(intent, params, data) {
   }
 }
 
-/**
- * Optional real-LLM formatting step. Only ever receives the small,
- * already-retrieved structured `data` object — never database
- * credentials or raw table access. Swap the endpoint/model as needed.
- */
-async function formatWithLLM(intent, params, data) {
-  const apiKey = import.meta.env.VITE_AI_API_KEY
-  if (!apiKey) return null
-
-  try {
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        messages: [
-          {
-            role: 'system',
-            content:
-              'You are an operations assistant for an aircond service company. You will be given a JSON object of already-retrieved data (from a controlled database query) and must answer the manager\'s question ONLY using that data, in 2-4 concise sentences or a short list. Never invent data not present in the JSON.',
-          },
-          {
-            role: 'user',
-            content: `Question: ${params.rawQuestion || ''}\nIntent: ${intent}\nData: ${JSON.stringify(data)}`,
-          },
-        ],
-        temperature: 0.2,
-      }),
-    })
-    if (!res.ok) return null
-    const json = await res.json()
-    return json.choices?.[0]?.message?.content?.trim() || null
-  } catch {
-    return null
-  }
+/** Real step 3: ask Claude (via the serverless function) to phrase the answer from the retrieved data. */
+async function formatAnswerRemote(question, intent, data) {
+  const res = await fetch('/api/ai', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'format', question, intent, data }),
+  })
+  if (!res.ok) throw new Error(`format failed: ${res.status}`)
+  const json = await res.json()
+  if (!json.answer) throw new Error('format returned empty answer')
+  return json.answer
 }
 
 /** Main entry point used by the UI. */
 export async function askOperationsAI(question) {
-  const { intent, params } = interpretQuestion(question)
-  params.rawQuestion = question
+  let intent
+  let params
+  let usedRemoteInterpret = true
+  try {
+    ;({ intent, params } = await interpretQuestionRemote(question))
+  } catch {
+    usedRemoteInterpret = false
+    ;({ intent, params } = interpretQuestionLocally(question))
+  }
 
   const data = await runControlledQuery(intent, params)
 
-  const llmAnswer = await formatWithLLM(intent, params, data)
-  const answer = llmAnswer || formatTemplate(intent, params, data)
+  let answer
+  let usedRemoteFormat = true
+  try {
+    answer = await formatAnswerRemote(question, intent, data)
+  } catch {
+    usedRemoteFormat = false
+    answer = formatTemplate(intent, params, data)
+  }
 
   return {
     intent,
     params,
     data,
     answer,
-    usedLLM: Boolean(llmAnswer),
+    usedLLM: usedRemoteInterpret || usedRemoteFormat,
+    usedRemoteInterpret,
+    usedRemoteFormat,
   }
 }
 

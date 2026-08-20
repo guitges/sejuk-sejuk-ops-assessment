@@ -30,18 +30,22 @@ All modules from the brief, plus most of the bonus/optional items:
 - **File storage:** Supabase Storage (`attachments` bucket)
 - **Charts:** Recharts
 - **Login:** Mock role switcher (Admin / Technician / Manager), persisted in `localStorage`. No real auth, per the brief.
-- **AI:** A rule-based interpreter + controlled Supabase queries by default; optionally calls a real LLM (OpenAI-compatible) if `VITE_AI_API_KEY` is set. See "How AI was integrated" below.
+- **AI:** Google Gemini (`gemini-3.6-flash`), called from a Vercel serverless function (`api/ai.js`) so the API key never reaches the browser. Falls back to a deterministic local engine if the AI endpoint is unavailable. See "How AI was integrated" below.
 
 ## Project structure
 
 ```
+api/
+  ai.js                 # Vercel serverless function — holds GEMINI_API_KEY server-side,
+                         # calls the Gemini REST API for "interpret" and "format"
 src/
   lib/
     supabaseClient.js   # Supabase client init
     db.js                # THE ONLY module that talks to Supabase tables — every
                           # other file (including the AI module) goes through here
     whatsapp.js          # wa.me deep-link builders + message templates
-    ai.js                # AI Operations Query Window logic
+    ai.js                # AI Operations Query Window logic — calls api/ai.js,
+                          # falls back to a local deterministic engine on failure
   context/AuthContext.jsx # mock role/login state
   components/             # Layout, StatusBadge
   pages/
@@ -59,30 +63,32 @@ supabase/
 - **`order_no` is generated server-side** via a Postgres sequence + trigger (`ORDER1001`, `ORDER1002`, ...), not client-side, to avoid collisions if two admins create orders concurrently.
 - **WhatsApp integration uses `wa.me` deep links**, not the WhatsApp Business API — no business account/API keys are needed for a take-home assessment, and it's genuinely how many small businesses do this in practice. Every notification is also logged to `notifications_log` for traceability, so swapping in the real Cloud API later is a matter of replacing `buildWaLink` + adding a server-side sender, not restructuring the app.
 - **AI Workflow Supervisor is folded into the Manager Review Queue** (RM discrepancy and "no photos" flags) rather than a separate screen, since that's where a manager would actually act on it.
+- **The AI's API key never touches the browser.** The app is otherwise fully client-side (React talks straight to Supabase using the public anon key, which is safe — it's protected by RLS). An LLM API key is different: it's a billable secret, and a client-side `VITE_*` env var gets bundled straight into the JS anyone can view. So `api/ai.js` — a Vercel serverless function — is the *only* piece of backend code in this project, existing solely to keep `GEMINI_API_KEY` server-side.
 
 ## How AI was integrated
 
-Flow (matches the brief): **question → intent interpretation → controlled DB query → formatted answer.**
+Flow (matches the brief): **question → AI interprets question → controlled DB query → AI formats answer.** Both AI steps are real calls to Google's Gemini API (`gemini-3.6-flash`), not templates — see `api/ai.js` (server) and `src/lib/ai.js` (client orchestration).
 
-`src/lib/ai.js` has two swappable layers:
+1. **Interpret** (`POST /api/ai {action:'interpret', question}`) — Gemini classifies the free-text question into one of four supported intents (`technician_jobs`, `top_technician`, `jobs_completed_count`, `overloaded_technician`) plus parameters (technician name, time period), constrained by a system prompt listing the exact valid intents/technicians/periods and forced to `responseMimeType: application/json`. Gemini never sees the database — only the question text and that fixed vocabulary. Anything outside the four shapes (or naming an unknown technician) is classified `unsupported`.
+2. **Controlled DB query** (`runControlledQuery()` in `src/lib/ai.js`) — executes the matched intent through the *same* `db.js` functions the rest of the app uses (e.g. `weeklyLeaderboard()`, `listCompletedJobs({ technicianName })`). This step has no AI in it at all — it's a plain JS switch statement, so the model can never construct or influence an actual database query, only pick from a pre-defined menu of them.
+3. **Format** (`POST /api/ai {action:'format', question, intent, data}`) — Gemini turns the small retrieved JSON into a natural-language answer, with a system prompt that explicitly forbids inventing data not present in that JSON. This is genuine model reasoning, not string templating — e.g. asking "which technician might be overloaded" doesn't just report the top count, it compares it against each other technician individually in the phrasing.
 
-1. **`interpretQuestion()`** — turns free text into one of a fixed set of intents (`technician_jobs`, `top_technician`, `jobs_completed_count`, `overloaded_technician`) plus parameters (technician name, time period), using keyword/regex matching against the known technician list and period words ("today", "this week", "last week"). This is deliberately deterministic rather than LLM-based by default, so answers are reproducible and can't hallucinate a query that touches data it shouldn't.
-2. **`runControlledQuery()`** — executes the matched intent through the *same* `db.js` functions the rest of the app uses (e.g. `weeklyLeaderboard()`, `listCompletedJobs({ technicianName })`). The AI never sees a table name or writes SQL.
-3. **`formatAnswer()`** — turns the small structured result into the natural-language reply. By default this is a template that mirrors the PDF's example output exactly (e.g. *"Technician Ali completed 3 jobs last week: ORDER1234 – Cleaning..."*). If `VITE_AI_API_KEY` is set, `formatWithLLM()` instead sends **only the already-retrieved JSON** (never credentials or a DB connection) to an OpenAI-compatible chat completions endpoint with a system prompt that forbids inventing data not in that JSON, and uses its response instead.
+**Fallback:** if the `/api/ai` call fails for any reason (offline, `ANTHROPIC`/`GEMINI_API_KEY` unset, running plain `npm run dev` without Vercel's serverless runtime — Vite alone doesn't serve the `api/` folder), both steps fall back to a small deterministic engine in `src/lib/ai.js` (keyword matching for interpretation, a string template for formatting), so the module degrades gracefully instead of breaking. The chat UI labels each answer with which path was actually used (`interpret: Gemini` vs `local fallback`), so this is visible, not hidden.
 
 ### Supported AI queries
 
 - "What jobs did technician **[name]** complete **[today / this week / last week]**?"
 - "Which technician completed the most jobs **[this week]**?"
 - "How many jobs were completed **[today / this week]**?"
-- "Which technician might be overloaded **[this week]**?" (compares each technician's job count to the team average)
+- "Which technician might be overloaded **[this week]**?" (compares each technician's job count to the others)
 
 ### Limitations of the AI implementation
 
-- Intent matching is keyword-based, not a general NLU model — it correctly answers the four question shapes above (and close paraphrases) but will fall back to a generic "here's what I can answer" message for anything else, rather than attempting a best-effort guess. This is a deliberate tradeoff: predictable and safe over clever.
+- Still only four supported *shapes* of question — Gemini is doing real NLU within that vocabulary (handles paraphrases, typos, indirect phrasing well), but a question genuinely outside those four intents is correctly declined (`unsupported`) rather than answered speculatively. Verified live: asking about the weather in Shah Alam correctly returns "I do not have access to weather information" instead of a hallucinated answer.
 - "Last week" is approximated as "last 14 days" (not bounded to exactly the prior Mon–Sun), since the assessment's own example data doesn't require calendar-week precision.
-- If a technician name isn't recognised (not one of the 4 seeded technicians) and no other keyword matches, the assistant returns the generic capability message rather than a specific "I don't know that technician" — a minor UX gap I'd fix first in a real iteration.
+- Each question triggers two sequential model calls (interpret, then format) — noticeably slower (several seconds) than the deterministic fallback. A production version would likely combine these into one call with function-calling, or stream the response.
 - No conversation memory — each question is answered independently (no follow-up "and what about last week?" support).
+- The Gemini free tier has modest rate limits; a burst of concurrent managers asking questions could hit them, in which case the local fallback engine takes over automatically.
 - The optional **AI Document Understanding** challenge (extracting structured fields from uploaded documents) was not implemented, to keep scope focused on making the other modules solid — see below.
 
 ## Challenges / assumptions
@@ -96,8 +102,8 @@ Flow (matches the brief): **question → intent interpretation → controlled DB
 
 - **Easiest module:** Module 1 (Admin order submission) — it's a straightforward form-to-database flow with clear fields specified in the brief.
 - **Hardest module:** The AI Operations Query Window — not the "call an LLM" part, but designing the retrieval layer so the AI is *provably* restricted to controlled queries (per the brief's explicit requirement) while still feeling like a real assistant, and keeping the mock-vs-real-LLM path swappable with one env var.
-- **What I'd improve for a real production system:** real Supabase Auth with per-role RLS policies instead of UI-only rule enforcement; server-side WhatsApp Cloud API sending instead of client-generated deep links (so notifications don't depend on the browser being open); signed/private storage URLs; a real NLU layer (or a constrained LLM function-calling setup) for the AI module instead of keyword matching, while keeping the same "structured-data-only" retrieval boundary; and pagination for the orders list once volume grows past a few hundred rows.
-- **How AI tools were used while building this:** built end-to-end with Claude Code (Anthropic) — used to scaffold the React/Vite/Tailwind project, write the Supabase schema and RLS policies, implement all pages/modules, and drive an in-browser QA pass (creating orders, walking a job through Assigned → In Progress → Job Done → Reviewed, uploading a test file, and exercising the AI query module) that caught and fixed two real bugs before this was written up (an `order_no` sequence collision with seed data, and a snake_case/camelCase mismatch that caused newly-assigned orders to show status "New" instead of "Assigned").
+- **What I'd improve for a real production system:** real Supabase Auth with per-role RLS policies instead of UI-only rule enforcement; server-side WhatsApp Cloud API sending instead of client-generated deep links (so notifications don't depend on the browser being open); signed/private storage URLs; combine the interpret+format AI calls into one function-calling round trip to cut latency; and pagination for the orders list once volume grows past a few hundred rows.
+- **How AI tools were used while building this:** built end-to-end with Claude Code (Anthropic) — used to scaffold the React/Vite/Tailwind project, write the Supabase schema and RLS policies, implement all pages/modules, and drive an in-browser QA pass (creating orders, walking a job through Assigned → In Progress → Job Done → Reviewed, uploading a test file, and exercising the AI query module against the live deployment) that caught and fixed several real bugs before submission: an `order_no` sequence collision with seed data, a snake_case/camelCase mismatch that kept newly-assigned orders stuck on status "New", a missing SPA rewrite that 404'd on direct route access on Vercel, and an initial design that would have put the AI provider's API key directly in client-side JS (moved to a serverless function instead once caught).
 
 ## Running it locally
 
@@ -109,4 +115,4 @@ npm run dev
 
 Database setup (one-time): run `supabase/schema.sql` in the Supabase project's SQL Editor. It creates all tables, RLS policies, the `attachments` storage bucket, and seeds 4 technicians + ~30 sample orders spanning the last week (including one technician with a deliberately heavy week, to demo the "overloaded technician" AI insight).
 
-To enable real LLM-formatted AI answers instead of the built-in template engine, set `VITE_AI_API_KEY` in `.env.local` (OpenAI-compatible chat completions endpoint).
+**Note on the AI module locally:** `npm run dev` runs plain Vite, which does not serve the `api/` serverless function — so the AI Query page will use its local fallback engine (still fully functional, just not calling Gemini) unless you also set `GEMINI_API_KEY` and run via `vercel dev` instead. The deployed production site (see the live demo link above) always uses real Gemini calls, since `GEMINI_API_KEY` is configured there.
