@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { listOrders, getServiceCompletion, updateOrderStatus, ORDER_STATUSES } from '../../lib/db'
+import { listOrders, getServiceCompletion, updateOrderStatus, listManagerNotifications, ORDER_STATUSES } from '../../lib/db'
 import StatusBadge from '../../components/StatusBadge'
 import { useAuth } from '../../context/AuthContext'
 
@@ -8,12 +8,17 @@ export default function ReviewQueue() {
   const [filter, setFilter] = useState('Job Done')
   const [orders, setOrders] = useState([])
   const [completions, setCompletions] = useState({})
+  const [notifications, setNotifications] = useState([])
   const [loading, setLoading] = useState(true)
 
   const load = async () => {
     setLoading(true)
-    const rows = await listOrders(filter ? { status: filter } : {})
+    const [rows, notes] = await Promise.all([
+      listOrders(filter ? { status: filter } : {}),
+      listManagerNotifications(),
+    ])
     setOrders(rows)
+    setNotifications(notes)
     const entries = await Promise.all(
       rows.map(async (o) => [o.id, await getServiceCompletion(o.id)]),
     )
@@ -45,6 +50,22 @@ export default function ReviewQueue() {
           ))}
         </select>
       </div>
+
+      {notifications.length > 0 && (
+        <div className="bg-white border border-slate-200 rounded-lg p-4 mb-4">
+          <h2 className="text-sm font-semibold text-slate-900 mb-2">Recent Notifications</h2>
+          <ul className="text-xs text-slate-600 space-y-1.5">
+            {notifications.map((n) => (
+              <li key={n.id} className="flex justify-between gap-3">
+                <span>
+                  <span className="font-medium text-slate-800">{n.orders?.order_no}</span> — {n.message}
+                </span>
+                <span className="text-slate-400 shrink-0">{new Date(n.created_at).toLocaleString()}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {loading ? (
         <p className="text-sm text-slate-500">Loading...</p>

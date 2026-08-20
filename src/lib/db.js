@@ -215,6 +215,18 @@ export async function listNotifications(orderId) {
   )
 }
 
+/** Recent "job completed" notifications logged for the manager (Module 2 bonus). */
+export async function listManagerNotifications(limit = 8) {
+  return unwrap(
+    await supabase
+      .from('notifications_log')
+      .select('id, message, created_at, orders ( order_no )')
+      .eq('recipient_type', 'manager')
+      .order('created_at', { ascending: false })
+      .limit(limit),
+  )
+}
+
 // ---- KPI / reporting queries (Bonus module + AI module) --------------
 
 function daysAgoIso(days) {

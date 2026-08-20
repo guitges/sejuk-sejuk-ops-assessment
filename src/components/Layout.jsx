@@ -28,10 +28,10 @@ export default function Layout({ children }) {
   return (
     <div className="min-h-screen flex flex-col">
       <header className="bg-brand-800 text-white">
-        <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-6">
+        <div className="max-w-6xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
             <span className="font-semibold tracking-tight">Sejuk Sejuk Ops</span>
-            <nav className="flex gap-1">
+            <nav className="flex flex-wrap gap-1">
               {(NAV_BY_ROLE[user.role] || []).map((item) => (
                 <NavLink
                   key={item.to}
@@ -49,12 +49,12 @@ export default function Layout({ children }) {
             </nav>
           </div>
           <div className="flex items-center gap-3 text-sm">
-            <span className="text-brand-100">
+            <span className="text-brand-100 truncate max-w-[40vw] sm:max-w-none">
               {user.name} <span className="text-brand-300">·</span> {user.role}
             </span>
             <button
               onClick={handleLogout}
-              className="px-2.5 py-1 rounded-md bg-brand-700 hover:bg-brand-600 text-white text-xs font-medium"
+              className="shrink-0 px-2.5 py-1 rounded-md bg-brand-700 hover:bg-brand-600 text-white text-xs font-medium"
             >
               Switch role
             </button>
