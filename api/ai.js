@@ -13,7 +13,13 @@
 //     a controlled db.js query) into a natural-language answer. Gemini only
 //     ever sees that small JSON object, never a database connection.
 
-const GEMINI_MODEL = 'gemini-3.6-flash'
+// gemini-3.5-flash-lite: no mandatory "thinking" token overhead (unlike the
+// gemini-3.x-flash tier, where thinking tokens silently eat into the same
+// maxOutputTokens budget as the visible answer) and a far more generous free
+// -tier daily request quota — gemini-3.6-flash's free tier caps at only 20
+// requests/day, which this app's 2-calls-per-question flow burns through
+// almost immediately.
+const GEMINI_MODEL = 'gemini-3.5-flash-lite'
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`
 
 const KNOWN_TECHNICIANS = ['Ali', 'John', 'Bala', 'Yusoff']
@@ -65,12 +71,6 @@ async function callGemini({ systemInstruction, userText, jsonOutput, maxOutputTo
     system_instruction: { parts: [{ text: systemInstruction }] },
     contents: [{ role: 'user', parts: [{ text: userText }] }],
     generationConfig: {
-      // This model always spends some tokens "thinking" before writing the
-      // visible answer, and those thinking tokens count against the same
-      // maxOutputTokens budget — thinkingLevel "low" keeps that spend small,
-      // and maxOutputTokens is set generously below so the visible answer
-      // itself never gets truncated once thinking has taken its share.
-      thinkingConfig: { thinkingLevel: 'low' },
       maxOutputTokens,
       ...(jsonOutput ? { responseMimeType: 'application/json' } : {}),
     },

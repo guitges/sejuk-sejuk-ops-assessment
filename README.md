@@ -30,7 +30,7 @@ All modules from the brief, plus most of the bonus/optional items:
 - **File storage:** Supabase Storage (`attachments` bucket)
 - **Charts:** Recharts
 - **Login:** Mock role switcher (Admin / Technician / Manager), persisted in `localStorage`. No real auth, per the brief.
-- **AI:** Google Gemini (`gemini-3.6-flash`), called from a Vercel serverless function (`api/ai.js`) so the API key never reaches the browser. Falls back to a deterministic local engine if the AI endpoint is unavailable. See "How AI was integrated" below.
+- **AI:** Google Gemini (`gemini-3.5-flash-lite`), called from a Vercel serverless function (`api/ai.js`) so the API key never reaches the browser. Falls back to a deterministic local engine if the AI endpoint is unavailable. See "How AI was integrated" below.
 
 ## Project structure
 
@@ -67,7 +67,7 @@ supabase/
 
 ## How AI was integrated
 
-Flow (matches the brief): **question → AI interprets question → controlled DB query → AI formats answer.** Both AI steps are real calls to Google's Gemini API (`gemini-3.6-flash`), not templates — see `api/ai.js` (server) and `src/lib/ai.js` (client orchestration).
+Flow (matches the brief): **question → AI interprets question → controlled DB query → AI formats answer.** Both AI steps are real calls to Google's Gemini API (`gemini-3.5-flash-lite`), not templates — see `api/ai.js` (server) and `src/lib/ai.js` (client orchestration).
 
 1. **Interpret** (`POST /api/ai {action:'interpret', question}`) — Gemini classifies the free-text question into one of four supported intents (`technician_jobs`, `top_technician`, `jobs_completed_count`, `overloaded_technician`) plus parameters (technician name, time period), constrained by a system prompt listing the exact valid intents/technicians/periods and forced to `responseMimeType: application/json`. Gemini never sees the database — only the question text and that fixed vocabulary. Anything outside the four shapes (or naming an unknown technician) is classified `unsupported`.
 2. **Controlled DB query** (`runControlledQuery()` in `src/lib/ai.js`) — executes the matched intent through the *same* `db.js` functions the rest of the app uses (e.g. `weeklyLeaderboard()`, `listCompletedJobs({ technicianName })`). This step has no AI in it at all — it's a plain JS switch statement, so the model can never construct or influence an actual database query, only pick from a pre-defined menu of them.
@@ -88,7 +88,8 @@ Flow (matches the brief): **question → AI interprets question → controlled D
 - "Last week" is approximated as "last 14 days" (not bounded to exactly the prior Mon–Sun), since the assessment's own example data doesn't require calendar-week precision.
 - Each question triggers two sequential model calls (interpret, then format) — noticeably slower (several seconds) than the deterministic fallback. A production version would likely combine these into one call with function-calling, or stream the response.
 - No conversation memory — each question is answered independently (no follow-up "and what about last week?" support).
-- The Gemini free tier has modest rate limits; a burst of concurrent managers asking questions could hit them, in which case the local fallback engine takes over automatically.
+- The Gemini free tier has modest rate limits, and they vary a lot by model — `gemini-3.6-flash` (the "flash" tier's current model) turned out to cap free usage at only 20 requests/day, which this app's two-calls-per-question flow burned through almost immediately during testing. Switched to `gemini-3.5-flash-lite`, which has a much higher free daily quota and — as a side benefit — no mandatory "thinking" token overhead (see the next point). If usage ever exceeds the free quota, the local fallback engine takes over automatically rather than the feature breaking.
+- Gemini's "flash" tier models spend some tokens on internal reasoning ("thinking") before writing the visible answer, and those tokens count against the same `maxOutputTokens` budget as the answer itself — with too small a budget, this silently truncates the answer mid-sentence rather than erroring. Caught this live in testing (answers cut off like `"...completed"` with no continuation) and fixed it by both increasing the token budget generously and switching to `gemini-3.5-flash-lite`, which doesn't have this overhead by default.
 - The optional **AI Document Understanding** challenge (extracting structured fields from uploaded documents) was not implemented, to keep scope focused on making the other modules solid — see below.
 
 ## Challenges / assumptions
